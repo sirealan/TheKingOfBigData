@@ -1,0 +1,270 @@
+Mapreduce是一种分布计算模型，由Google提出，主要用于搜索领域，解决海量数据的计算问题.
+
+MapReduce合并了两种经典函数：
+	映射maping：映射（Mapping）对集合里的每个目标应用同一个操作。即，如果你想把表单里每个单元格乘以二，
+				那么把这个函数单独地应用在每个单元格上的操作就属于mapping。
+	化简（Reducing ）遍历集合中的元素来返回一个综合的结果。即，输出表单里一列数字的和这个任务属于reducing。
+
+MapReduce由两个阶段组成：Map和Reduce，用户只需要实现map()和reduce()两个函数，即可实现分布式计算，非常简单。
+	注意：MapReduce在多于10PB数据时趋向于变慢。
+
+MapReduce的原理：
+	一个splite对应一个map task，每一行产生一个<k1,v1>,经过map函数变为<k2,v2>，然后经过分区，排序，分组，合并，spill to 
+	disk，然后由reduce的shuffle的fetch功能，在经过排序，merge，然后进入reduce函数，最后输出结果为<k3,v3>
+		注意:如果没有reduce任务数目，那么<k2,v2>不会经过排序，直接进入reduce，但是map的sort功能不能被关闭
+		
+		1. map任务处理
+			1.1 读取输入文件内容，解析成key、value对。对输入文件的每一行，解析成key、value对。
+				每一个键值对调用一次map函数。
+			1.2 写自己的逻辑，对输入的key、value处理，转换成新的key、value输出。
+			1.3 对输出的key、value进行分区。
+			1.4 对不同分区的数据，按照key进行排序、分组。相同key的value放到一个集合中。
+			1.5 (可选)分组后的数据进行归约。
+		map()	<k1,v1>	<k2,v2>
+		2.reduce任务处理
+			2.1 对多个map任务的输出，按照不同的分区，通过网络copy到不同的reduce节点。
+			2.2 对多个map任务的输出进行合并、排序。写reduce函数自己的逻辑，对输入的key、values处理，
+				转换成新的key、value输出。
+			2.3 把reduce的输出保存到文件中。
+		reduce()	<k2,{v2}>	<k3,v3>
+			ps：sbin/mr-jobhistory-daemon.sh start historyserver  启动JobHistoryServer进程来监控job执行情况；
+
+序列化与反序列化：
+	序列化（Serialization）是指把结构化对象转化为字节流。简单理解就是把内存的东西写到磁盘就是序列化；
+	反序列化（Deserialization）是序列化的逆过程。即把字节流转回结构化对象。
+	简单理解就是把磁盘的东西读到内存是反序列化；
+	紧凑：高效使用存储空间。
+	快速：读写数据的额外开销小
+	可扩展：可透明地读取老格式的数据
+	互操作：支持多语言的交互	
+	hadoop的序列化比java的序列化更高效。快捷
+	ps：Hadoop的序列化格式：Writable
+	序列化在分布式环境的两大作用：（进程间通信），（永久存储）。
+
+		Writable
+	write 是把每个对象序列化到输出流
+
+	readFields是把输入流字节反序列化
+	在这里注意如果使用ArrayWritable，需要构造函数，
+	class LongArrayWritable extends ArrayWritable{
+		public LongArrayWritable() {
+			super(LongWritable.class);
+		}
+	}
+	
+SequenceFile 无序存储，按照键值对的方式存储，一般对小文件可以使用这种文件合并，
+即将文件名作为key，文件内容作为value序列化到大文件中。
+	这种文件格式有以下好处：
+		支持压缩，且可定制为基于Record或Block压缩（Block级压缩性能较优）
+		本地化任务支持：因为文件可以被切分，因此MapReduce任务时数据的本地化情况应该是非常好的。
+		对key、value的长度进行了定义，(反)序列化速度非常快。
+		缺点是需要一个合并文件的过程，文件较大，且合并后的文件将不方便查看，
+		必须通过遍历查看每一个小文件。
+	MapFile 会对key建立索引文件，value按key顺序存储（简言之就是排序后的SequenceFile）
+	通过观察其目录结构可以看到MapFile由两部分组成，分别是data和index
+	index作为文件的数据索引，主要记录了每个Record的key值，以及该Record在文件中的偏移位置。
+	需注意的是，MapFile并不会把所有Record都记录到index中去，默认情况下每隔128条记录存储一个索引映射。
+	MapFile的KeyClass一定要实现WritableComparable接口,即Key值是可比较的。
+		基于MapFile的结构有:
+			ArrayFile 像我们使用的数组一样，key值为序列化的数字
+			SetFile 他只有key，value为不可变的数据
+			BloomMapFile 在 MapFile 的基础上增加了一个 /bloom 文件，包含的是二进制的过滤表，
+			在每一次写操作完成时，会更新这个过滤表。
+	
+MapReduce输入的处理类
+	FileInputFormat是所有以文件作为数据源的InputFormat实现的基类，FileInputFormat保存作为job输入的所有文件，
+	并实现了对输入文件计算splits的方法。
+	InputFormat 负责处理MR的输入部分.有三个作用:
+		验证作业的输入是否规范.
+		把输入文件切分成InputSplit.
+		提供RecordReader 的实现类，把InputSplit读到Mapper中进行处理.
+	TextInputFormat是默认的处理类，处理普通文本文件
+		文件中每一行作为一个记录，他将每一行在文件中的起始偏移量作为key，每一行的内容作为value。
+		默认以\n或回车键作为一行记录。TextInputFormat继承了FileInputFormat。
+	自定义输入格式
+		1）继承FileInputFormat基类。
+		2）重写里面的getSplits(JobContext context)方法。
+		3）重写createRecordReader(InputSplit split,TaskAttemptContext context)方法。
+	MapReduce其他输入类
+		DBInputFormat
+		CombineFileInputFormat
+			相对于大量的小文件来说，hadoop更合适处理少量的大文件。
+			CombineFileInputFormat可以缓解这个问题，它是针对小文件而设计的。
+		KeyValueTextInputFormat
+			当输入数据的每一行是两列，并用tab分离的形式的时候，
+			KeyValueTextInputformat处理这种格式的文件非常适合。
+		NLineInputformat    
+			NLineInputformat可以控制在每个split中数据的行数。
+		SequenceFileInputformat? 
+			当输入文件格式是sequencefile的时候，要使用SequenceFileInputformat作为输入。
+
+MapReduce的输出	
+	TextOutputFormat 
+       默认的输出格式，key和value中间值用tab隔开的。 
+    DBOutputFormat
+    SequenceFileOutputformat 
+       将key和value以sequencefile格式输出。 
+    SequenceFileAsOutputFormat 
+       将key和value以原始二进制的格式输出。 
+    MapFileOutputFormat 
+       将key和value写入MapFile中。由于MapFile中的key是有序的，所以写入的时候必须保证记录是按key值顺序写入的。 
+    MultipleOutputFormat 
+        默认情况下一个reducer会产生一个输出，但是有些时候我们想一个reducer产生多个输出，MultipleOutputFormat和MultipleOutputs可以实现这个功能。
+
+Map任务的数量？
+	一个InputSplit对应一个Map task。
+	InputSplit的大小是由Math.max(minSize, Math.min(maxSize, blockSize))决定。
+	单节点一般10—100个map task。
+	map task执行时长不建议低于1分钟，否则效率低。
+
+
+Yarn上面的应用执行流程
+	resourcemanager:管理调度资源
+	nodemanager:分配container
+	
+了解计数器
+	也可以通过http://master:50030/jobdetails.jsp查看
+	hadoop计数器:可以让开发人员以全局的视角来审查程序的运行情况以及各项指标，
+	及时做出错误诊断并进行相应处理。
+	自定义计数器与实现：
+		计数器声明
+		1.通过枚举声明
+		context.getCounter(Enum enum) 
+		2.动态声明
+		context.getCounter(String groupName,String counterName)  
+		计数器操作
+		counter.setValue(long value);//设置初始值
+		counter.increment(long incr);//增加计数
+
+Partitioner编程
+	Partitioner是partitioner的基类，如果需要定制partitioner也需要继承该类。
+	job的reduce task数量默认是1，由参数mapreduce.job.reduces设定。
+      默认partitioner是HashPartitioner。
+	自定义partitioner类，需要设置job.setNumReduceTasks(Integer。parsint（args【1】）)
+	如果设置job.setNumReduceTasks(0)，那么不会执行reduce任务。同时，mapper的输出也不会排序、分组、合并。
+	
+排序编程：
+	方式一：继承WritableComparator
+	方式二：自定义k2类型，实现writeablecomparable，复写序列化，反序列化
+		在map和reduce阶段进行排序时，比较的是k2。v2是不参与排序比较的。如果要想让v2也进行排序，需要把k2和v2组装成新的类，作为k2，才能参与比较。
+		
+	//无参构造方法，切记，切记
+	public MySort() {
+				super(K2.class, true);
+	}
+
+分组编程：
+	job.setGroupingComparatorClass(...);
+	//无参构造方法，切记，切记
+	public MyGroup() {
+				super(K2.class, true);
+	}
+	
+Combiners编程
+	每一个map可能会产生大量的输出，combiner的作用就是在map端对输出先做一次合并，以减少传输到reducer的数据量
+	combiner最基本是实现本地key的归并，combiner具有类似本地的reduce功能。
+	注意：Combiner的输出是Reducer的输入，Combiner绝不能改变最终的计算结果。所以从我的想法来看，Combiner只应该用于那种Reduce的输入key/value与输出key/value类型完全一致，
+	且不影响最终结果的场景。比如累加，最大值等。
+
+缓存：
+	1.加载文件job.addCacheFile(new URI("/hello#hel"));在这里hel是连接文件，
+	在map或者reduce中就可以直接使用hel作为文件名。
+	2.加载jar包job.addArchiveToClassPath(new Path("/mj.jar"));
+	
+Shuffle：
+	1.每个map有一个环形内存缓冲区，用于存储任务的输出。默认大小100MB（io.sort.mb属性），
+	一旦达到阀值0.8（io.sort.spill.percent）,一个后台线程把内容写到(spill)磁盘的指定目录（mapred.local.dir）
+	下的新建的一个溢出写文件。
+	2.写磁盘前，要partition,sort。如果有combiner，combine排序后数据。
+	3.等最后记录写完，合并全部溢出写文件为一个分区且排序的文件。
+	
+    1.Reducer通过Http方式得到输出文件的分区。
+	2.TaskTracker为分区文件运行Reduce任务。复制阶段把Map输出复制到Reducer的内存或磁盘。
+	一个Map任务完成，Reduce就开始复制输出。
+	3.排序阶段合并map输出。然后走Reduce阶段。
+
+hadoop的压缩codec:
+	【使用命令hadoop checknative -a 检查本地压缩库是否存在】
+	如果不存在，替换native文件，然后再次验证，就会成功
+	Codec为压缩，解压缩的算法实现。在Hadoop中，codec由CompressionCode的实现来表示。
+	支持的算法压缩比较：
+	原来的文件8.3g         压缩后： 压缩速度；   解压速度：
+	gzip：					1.8        17.5m/s 		58m/s
+	bzip2：                 1.1 		2.4           9.5
+	
+MapReduce中的join操作
+	reduce side join:reduce side join是一种最简单的join方式，其主要思想如下：
+		1.在map阶段，map函数同时读取两个文件File1和File2，为了区分两种来源的key/value数据对，
+		对每条数据打一个标签（tag）,比如：tag=0表示来自文件File1，
+		tag=2表示来自文件File2。即：map阶段的主要任务是对不同文件中的数据打标签。
+		
+		2.在reduce阶段，reduce函数获取key相同的来自File1和File2文件的value list， 
+		然后对于同一个key，对File1和File2中的数据进行join（笛卡尔乘积）。
+		即：reduce阶段进行实际的连接操作。
+	
+	map side join:
+	
+		1.[之所以存在reduce side join，是因为在map阶段不能获取所有需要的join字段，即：
+		同一个key对应的字段可能位于不同map中。](Reduce side join是非常低效的，
+		因为shuffle阶段要进行大量的数据传输。)
+		
+		2.Map side join是针对以下场景进行的优化：两个待连接表中
+		，有一个表非常大，而另一个表非常小，以至于小表(用户信息)可以直接存放到内存中。
+		这样，我们可以将小表复制多份，让每个map task内存中存在一份（比如存放到HashMap中），
+		然后只扫描大表：对于大表中的每一条记录key/value，在HashMap中查找是否有相同的key的记录，
+		如果有，则连接后输出即可。
+
+		ps：一个map任务默认分配的内存是1G;
+
+调度算法：
+	hadoop目前支持以下三种调度器：
+		1.FifoScheduler：最简单的调度器，按照先进先出的方式处理应用。
+		2.CapacityScheduler：可以看作是FifoScheduler的多队列版本。每个队列可以限制资源使用量。
+		3.FairScheduler：多队列，多用户共享资源。特有的客户端创建队列的特性，使得权限控制不太完美。
+		
+Hadoop Streaming：
+	Hadoop Streaming是Hadoop提供的一个编程工具，它允许用户使用任何可执行文件或者脚本文件作为
+	Mapper和Reducer，通过Hadoop Streaming编写的MapReduce
+	应用程序中每个任务可以由不同的编程语言环境组成
+	
+MapReduce的job如何调优（根据具体情况而定，这里只是列举一些经常可能出现的大体情况）
+		
+	1.如果存在大量的小数据文件，可以使用SequenceFile、自定义的CombineFileInputFormat
+	2.推测执行在整个集群上关闭，特定需要的作业单独开启，一般可以省下约5%~10%的集群资源
+		  mapred.map.task.speculative.execution=true;  
+		  mapred.reduce.task.speculative.execution=false; 
+	3.开启jvm重用
+		  mapred.job.reuse.jvm.num.tasks=-1  
+	4.增加InputSplit大小
+		  mapred.min.split.size=268435456
+	5.增大map输出的缓存
+		  io.sort.mb=300
+	6.增加合并spill文件数量
+		  io.sort.factor=50
+	7.map端输出压缩，推荐LZO压缩算法
+		  mapred.compress.map.output=true;  
+		  mapred.map.output.compression.codec=com.hadoop.compression.lzo.LzoCodec; 
+	8.增大shuffle复制线程数
+		  mapred.reduce.parallel.copies=15
+
+MapReduce重要配置参数：（也是根据具体情况而定，所以我们在具体场合具体分析）
+
+MapReduce常见算法：
+	
+	1.单词计数
+		wordcount.jar
+	2.数据去重(map默认去重)
+		desamepartition.jar
+	3.排序
+		sortapp.jar（设置sortclass继承extends WritableComparator，实现compare方法，这里一定要写构造方法）
+		sortapp2.jar（k2使用自定义类型，实现WritableComparable这个接口，复写compareto方法）
+	4.Top K
+		
+	5.选择
+	6.投影
+	7.分组
+		groupapp.jar（继承WritableComparator，实现compare方法，这里一定要写构造方法）
+	8.多表连接
+	9.单表关联
+		考虑是使用map join（有一个文件比较小，另外一个文件比较大），还是使用reduce join（两个文件都比较大）
+	
